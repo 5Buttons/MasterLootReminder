@@ -1,32 +1,26 @@
 local MasterLootReminder = LibStub("AceAddon-3.0"):NewAddon("MasterLootReminder", "AceEvent-3.0", "AceConsole-3.0")
 local L = LibStub("AceLocale-3.0"):GetLocale("MasterLootReminder", true)
 
+-- Get the boss library for more accurate boss detection
 local LibBabbleBoss = LibStub("LibBabble-Boss-3.0")
 local BossCheck = LibBabbleBoss:GetUnstrictLookupTable()
 
+-- Local variables
 MasterLootReminder.visible = false
 MasterLootReminder.bossName = "_NONE_"
---MasterLootReminder.Ignored = {}
-MasterLootReminder.inCombat = false
-MasterLootReminder.lastBossEncountered = nil
-
---Vashj state tracking
-MasterLootReminder.vashjEncounter = false
-MasterLootReminder.vashjPhase3 = false
-MasterLootReminder.vashjPhase1Handled = false
-
+MasterLootReminder.Ignored = {}
 
 -- Default settings
 local defaults = {
     profile = {
         Enable = true,
         Type = 2, -- 1 = Party only, 2 = Raid only, 3 = Both
-        Ignored = {},
-        GroupLootReminder = true
+        Ignored = {}
     }
 }
 
 function MasterLootReminder:OnInitialize()
+    -- Initialize DB
     self.db = LibStub("AceDB-3.0"):New("MasterLootReminderDB", defaults)
     
     -- Register slash commands
@@ -58,20 +52,12 @@ function MasterLootReminder:OnInitialize()
                 step = 1,
                 order = 2
             },
-            grouploot = {
-                name = "Post-Boss Group Loot Reminder",
-                desc = "Enable group loot reminder after boss fights",
-                type = "toggle",
-                get = function() return self.db.profile.GroupLootReminder end,
-                set = function(info, value) self.db.profile.GroupLootReminder = value end,
-                order = 3
-            },
             ignoreTarget = {
-                name = "Add target to ignore list",
-                desc = "Add target to permanent ignore list",
+                name = "Add target to 'permanent' ignore list",
+                desc = "Add target to 'permanent' ignore list",
                 type = "execute",
                 func = "IgnoreTarget",
-                order = 4
+                order = 3
             },
             pIgnore = {
                 type = 'group',
@@ -79,23 +65,49 @@ function MasterLootReminder:OnInitialize()
                 desc = "Permanent ignore list options",
                 args = {                
                     reset = {
-                        name = "Reset ignore list",
+                        name = "Reset permanent ignore list",
                         desc = "Reset permanent ignore list",
                         type = "execute",
                         func = "ResetPermanentIgnoreList",
                     },
                     list = {
-                        name = "View ignore list",
+                        name = "View permanent ignore list",
                         desc = "View permanent ignore list",
                         type = "execute",
                         func = "ViewPermanentIgnoreList",
                     },  
                     del = {
-                        name = "Delete Boss from ignore list",
+                        name = "Delete Boss from permanent ignore list",
                         desc = "Delete Boss from permanent ignore list",
                         type = "input",
                         usage = "<Boss>",
                         set = "DelFromPermanentIgnore",
+                    },
+                },
+            },
+            sIgnore = {
+                type = 'group',
+                name = "Session ignore list options",
+                desc = "Session ignore list options",
+                args = {                
+                    reset = {
+                        name = "Reset session ignore list",
+                        desc = "Reset session ignore list",
+                        type = "execute",
+                        func = "ResetSessionIgnoreList",
+                    },
+                    list = {
+                        name = "View session ignore list",
+                        desc = "View session ignore list",
+                        type = "execute",
+                        func = "ViewSessionIgnoreList",
+                    },  
+                    del = {
+                        name = "Delete name from session ignore list",
+                        desc = "Delete name from session ignore list",
+                        type = "input",
+                        usage = "<name>",
+                        set = "DelFromSessionIgnore",
                     },
                 },
             },
@@ -109,13 +121,11 @@ end
 
 function MasterLootReminder:OnEnable()
     self:RegisterEvent("PLAYER_TARGET_CHANGED")
-    self:RegisterEvent("CHAT_MSG_MONSTER_YELL")
-    self:RegisterEvent("PLAYER_REGEN_ENABLED")
     self:Print("MasterLootReminder loaded. Type /mlr for options.")
 end
 
 function MasterLootReminder:OnDisable()
-    self:UnregisterAllEvents()
+    self:UnregisterEvent("PLAYER_TARGET_CHANGED")
 end
 
 -- Chat Command Handler
@@ -148,7 +158,6 @@ end
 function MasterLootReminder:SetType(info, value)
     self.db.profile.Type = value
 end
-
 
 -- Boss detection
 function MasterLootReminder:IsBoss(unitName)
@@ -199,6 +208,27 @@ end
 
 function MasterLootReminder:DelFromPermanentIgnore(info, name)
     self:DelFromIgnore(name, self.db.profile.Ignored, "Permanent")
+end
+
+function MasterLootReminder:ResetSessionIgnoreList(info)
+    wipe(self.Ignored)
+    self:Print("Session ignore list reset!")
+end
+
+function MasterLootReminder:ViewSessionIgnoreList(info)
+    if #self.Ignored == 0 then
+        self:Print("Session ignore list is empty!")
+        return
+    end
+    
+    self:Print("Session ignore list:")
+    for _, value in pairs(self.Ignored) do
+        self:Print(value)
+    end
+end
+
+function MasterLootReminder:DelFromSessionIgnore(info, name)
+    self:DelFromIgnore(name, self.Ignored, "Session")
 end
 
 function MasterLootReminder:DelFromIgnore(name, tableName, typeoflist)
@@ -272,74 +302,21 @@ function MasterLootReminder:Ignore(tableName)
 end
 
 -- Event Handlers
-
---special lady vash case
-function MasterLootReminder:CHAT_MSG_MONSTER_YELL(event, message, sender)
-    if sender == "Lady Vashj" and message == L["You may want to take cover."] then
-        self.vashjPhase3 = true
-        if self:IsGroupLeader() and GetLootMethod() ~= "master" then
-            StaticPopup_Show("MASTERLOOTREMINDER_VASHJ_ML")
-        end
-    end
-end
-
-function MasterLootReminder:PLAYER_REGEN_ENABLED()
-    -- Reset encounter when leaving combat
-    self.inCombat = false
-    self.vashjEncounter = false
-    self.vashjPhase3 = false
-    self.vashjPhase1Handled = false
-    if self.db.profile.GroupLootReminder and self.lastBossEncountered then
-        if self:IsGroupLeader() and GetLootMethod() ~= "group" then
-            StaticPopup_Show("MASTERLOOTREMINDER_GROUP_LOOT")
-        end
-        self.lastBossEncountered = nil
-    end
-end
-
-function MasterLootReminder:PLAYER_REGEN_DISABLED()
-    -- Reset flags when entering combat
-    self.vashjEncounter = false
-    self.vashjPhase3 = false
-    self.vashjPhase1Handled = false
-    self.inCombat = true
-    self.lastBossEncountered = nil
-end
-
 function MasterLootReminder:PLAYER_TARGET_CHANGED()
     local type = self.db.profile.Type
     local getType = self:GetGroupType()
     
     if self.db.profile.Enable and (getType ~= 0 and type == 3 or getType == type) then
         local lootmethod = GetLootMethod()
-        local targetName = UnitName("target")
-
-           -- Track boss encounters during combat
-           if UnitAffectingCombat("player") and targetName then
-            if self:IsBoss(targetName) then
-                self.lastBossEncountered = targetName
-            end
-        end
-        -- Lady Vashj special handling
-        if targetName == "Lady Vashj" and self:IsBoss(targetName) then
-            if not self.vashjEncounter then
-                self.vashjEncounter = true
-                self.vashjPhase1Handled = false
-            end
-            
-            if not self.vashjPhase3 and not self.vashjPhase1Handled then
-                if self:IsGroupLeader() and lootmethod ~= "freeforall" then
-                    StaticPopup_Show("MASTERLOOTREMINDER_VASHJ_FFA")
-                    self.vashjPhase1Handled = true
-                end
-            end
-            return  -- Skip normal processing for Vashj
+        local targetName
+        
+        if UnitIsPlayer("target") or UnitPlayerControlled("target") then
+            targetName = UnitName("targettarget")
         else
-            self.vashjEncounter = false
+            targetName = UnitName("target")
         end
-        -- Normal boss processing
-        if targetName and self:IsBoss(targetName) and lootmethod ~= "master" 
-           and not self.visible and not self:IsIgnored(targetName) then
+        
+        if targetName and self:IsBoss(targetName) and lootmethod ~= "master" and not self.visible and not self:IsIgnored(targetName) then
             self.bossName = targetName
             self:Print("Boss detected: " .. self.bossName)
             StaticPopup_Show("MASTERLOOTREMINDER_POPUP")
@@ -348,36 +325,6 @@ function MasterLootReminder:PLAYER_TARGET_CHANGED()
 end
 
 -- Setup the popup dialog
--- New popup dialogs for Vashj
-StaticPopupDialogs["MASTERLOOTREMINDER_VASHJ_FFA"] = {
-    text = "Lady Vashj detected. Set loot to Free for All?",
-    button1 = YES,
-    button2 = NO,
-    OnShow = function() MasterLootReminder.visible = true end,
-    OnAccept = function() 
-        SetLootMethod("freeforall")
-        MasterLootReminder.visible = false
-    end,
-    OnCancel = function() MasterLootReminder.visible = false end,
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-}
-
-StaticPopupDialogs["MASTERLOOTREMINDER_VASHJ_ML"] = {
-    text = "Lady Vashj Phase 3 detected! Set loot to Master Loot?",
-    button1 = YES,
-    button2 = NO,
-    OnShow = function() MasterLootReminder.visible = true end,
-    OnAccept = function() 
-        SetLootMethod("master", UnitName("player"))
-        MasterLootReminder.visible = false
-    end,
-    OnCancel = function() MasterLootReminder.visible = false end,
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-}
 StaticPopupDialogs["MASTERLOOTREMINDER_POPUP"] = {
     text = "Set yourself as Master Looter?",
     button1 = YES,
@@ -391,24 +338,6 @@ StaticPopupDialogs["MASTERLOOTREMINDER_POPUP"] = {
     end,
     OnCancel = function()
         MasterLootReminder:Ignore(MasterLootReminder.Ignored)
-        MasterLootReminder.visible = false
-    end,
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-}
-StaticPopupDialogs["MASTERLOOTREMINDER_GROUP_LOOT"] = {
-    text = "Boss defeated! Switch to Group Loot?",
-    button1 = YES,
-    button2 = NO,
-    OnShow = function()
-        MasterLootReminder.visible = true
-    end,
-    OnAccept = function()
-        SetLootMethod("group")
-        MasterLootReminder.visible = false
-    end,
-    OnCancel = function()
         MasterLootReminder.visible = false
     end,
     timeout = 0,

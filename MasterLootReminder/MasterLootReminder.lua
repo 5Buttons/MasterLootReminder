@@ -1,21 +1,105 @@
-local MasterLootReminder = LibStub("AceAddon-3.0"):NewAddon("MasterLootReminder", "AceEvent-3.0", "AceConsole-3.0")
-local L = LibStub("AceLocale-3.0"):GetLocale("MasterLootReminder", true)
+local MasterLootReminder = LibStub("AceAddon-3.0"):NewAddon("MasterLootReminder", "AceEvent-3.0", "AceConsole-3.0", "AceTimer-3.0")
+
+-- Debug function to check library availability
+-- local function CheckLibrary(name)
+--   local status, lib = pcall(function() return LibStub(name) end)
+--    if status and lib then
+--        MasterLootReminder:Print("Found library: " .. name)
+--       return true
+--    else
+--        MasterLootReminder:Print("Missing library: " .. name)
+--        return false
+--    end
+--end
+
+-- Check for critical libraries
+MasterLootReminder.LibrariesLoaded = true
+
+-- Safe locale loading
+local L = {}
+if not CheckLibrary("AceLocale-3.0") then
+    MasterLootReminder.LibrariesLoaded = false
+else
+    L = LibStub("AceLocale-3.0"):GetLocale("MasterLootReminder", true)
+end
 
 -- Get the boss library for more accurate boss detection
-local LibBabbleBoss = LibStub("LibBabble-Boss-3.0")
-local BossCheck = LibBabbleBoss:GetUnstrictLookupTable()
+local BossCheck = nil
+if not CheckLibrary("LibBabble-Boss-3.0") then
+    MasterLootReminder:Print("Warning: LibBabble-Boss-3.0 not found. Using built-in boss list.")
+else
+    local LibBabbleBoss = LibStub("LibBabble-Boss-3.0")
+    BossCheck = LibBabbleBoss:GetUnstrictLookupTable()
+end
 
 -- Local variables
 MasterLootReminder.visible = false
 MasterLootReminder.bossName = "_NONE_"
 MasterLootReminder.Ignored = {}
+MasterLootReminder.isVashjPhase3 = false
+
+-- Define fallback list of known bosses for detection if library is missing
+local KnownBosses = {
+    -- SSC
+    ["Lady Vashj"] = true,
+    ["Hydross the Unstable"] = true,
+    ["The Lurker Below"] = true,
+    ["Leotheras the Blind"] = true,
+    ["Fathom-Lord Karathress"] = true,
+    ["Morogrim Tidewalker"] = true,
+    -- TK
+    ["Kael'thas Sunstrider"] = true,
+    ["Void Reaver"] = true,
+    ["High Astromancer Solarian"] = true,
+    ["Al'ar"] = true,
+    -- Other common raid bosses
+    ["Gruul the Dragonkiller"] = true,
+    ["High King Maulgar"] = true,
+    ["Magtheridon"] = true,
+    ["Prince Malchezaar"] = true,
+    ["Nightbane"] = true,
+    ["Shade of Aran"] = true,
+    ["Netherspite"] = true,
+    ["Maiden of Virtue"] = true,
+    ["Attumen the Huntsman"] = true,
+    ["Moroes"] = true,
+    ["The Curator"] = true,
+    ["Terestian Illhoof"] = true,
+    -- Sample Naxx bosses
+    ["Kel'Thuzad"] = true,
+    ["Sapphiron"] = true,
+    ["Patchwerk"] = true,
+    ["Thaddius"] = true,
+    ["Anub'Rekhan"] = true,
+    ["Heigan the Unclean"] = true,
+    ["Loatheb"] = true,
+    ["Instructor Razuvious"] = true,
+    ["Gothik the Harvester"] = true,
+    ["The Four Horsemen"] = true
+}
+
+-- Add a list of NPCs to be ignored by default
+local IgnoredByDefault = {
+    -- Lady Vashj adds
+    ["Coilfang Elite"] = true,
+    ["Coilfang Strider"] = true,
+    ["Tainted Elemental"] = true,
+    ["Toxic Spore Bat"] = true,
+    ["Enchanted Elemental"] = true,
+    ["Coilfang Fathom-Witch"] = true,
+    
+    -- Add other trash mobs or encounter adds here as needed
+    ["Tempest-Smith"] = true,  -- Possible Al'ar add
+    ["Phoenix"] = true,        -- Al'ar add
+    ["Phoenix Egg"] = true,    -- Al'ar add
+}
 
 -- Default settings
 local defaults = {
     profile = {
         Enable = true,
-        Type = 2, -- 1 = Party only, 2 = Raid only, 3 = Both
-        Ignored = {}
+        Ignored = {},
+        GroupLoot = false -- New option for group loot
     }
 }
 
@@ -26,6 +110,11 @@ function MasterLootReminder:OnInitialize()
     -- Register slash commands
     self:RegisterChatCommand("mlr", "ChatCommand")
     self:RegisterChatCommand("masterlootreminder", "ChatCommand")
+    
+    -- Copy default ignored NPCs to the session ignore list
+    for npc in pairs(IgnoredByDefault) do
+        table.insert(self.Ignored, npc)
+    end
     
     -- Create options table
     local options = {
@@ -41,15 +130,12 @@ function MasterLootReminder:OnInitialize()
                 set = "SetEnable",
                 order = 1,
             },
-            type = {
-                name = "ML Party/Raid/Both",
-                desc = "1 = Party only, 2 = Raid only, 3 = Both",
-                type = "range",
-                get = "GetType",
-                set = "SetType",
-                min = 1,
-                max = 3,
-                step = 1,
+            groupLoot = {
+                name = "Enable Group Loot",
+                desc = "Ask to switch to group loot after killing a boss",
+                type = "toggle",
+                get = "GetGroupLoot",
+                set = "SetGroupLoot",
                 order = 2
             },
             ignoreTarget = {
@@ -114,26 +200,106 @@ function MasterLootReminder:OnInitialize()
         },
     }
     
-    -- Register options table
-    LibStub("AceConfig-3.0"):RegisterOptionsTable("MasterLootReminder", options)
-    self.optionsFrame = LibStub("AceConfigDialog-3.0"):AddToBlizOptions("MasterLootReminder", "MasterLootReminder")
+    -- Initialize options with or without timer
+    local function InitializeOptions()
+        -- Try to register options with thorough error handling
+        local success, result = pcall(function()
+            -- Check for AceConfigRegistry-3.0 first, as it's required by AceConfig-3.0
+            if not CheckLibrary("AceConfigRegistry-3.0") then
+                return false, "AceConfigRegistry-3.0 is missing"
+            end
+            
+            -- Now check for AceConfig-3.0
+            if not CheckLibrary("AceConfig-3.0") then
+                return false, "AceConfig-3.0 is missing"
+            end
+            
+            -- Then register the options
+            LibStub("AceConfig-3.0"):RegisterOptionsTable("MasterLootReminder", options)
+            
+            -- Check if AceConfigDialog-3.0 is available
+            if not CheckLibrary("AceConfigDialog-3.0") then
+                return false, "AceConfigDialog-3.0 is missing"
+            end
+            
+            -- Create the options panel
+            self.optionsFrame = LibStub("AceConfigDialog-3.0"):AddToBlizOptions("MasterLootReminder", "MasterLootReminder")
+            return true
+        end)
+        
+        if not success then
+            self:Print("Could not initialize MLR: " .. tostring(result))
+            self:Print("Basic slash commands will still work")
+        elseif not result then
+            self:Print("Could not initialize MLR: " .. tostring(result))
+            self:Print("Basic slash commands will still work")
+        else
+            self:Print("MLR initialized successfully")
+        end
+    end
+    
+    -- Try to use timer if available, otherwise init directly
+    if self.ScheduleTimer then
+        self:ScheduleTimer(InitializeOptions, 2)
+    else
+        -- Fallback if AceTimer is not available
+        InitializeOptions()
+    end
 end
 
 function MasterLootReminder:OnEnable()
     self:RegisterEvent("PLAYER_TARGET_CHANGED")
+    self:RegisterEvent("CHAT_MSG_MONSTER_YELL")
     self:Print("MasterLootReminder loaded. Type /mlr for options.")
 end
 
 function MasterLootReminder:OnDisable()
     self:UnregisterEvent("PLAYER_TARGET_CHANGED")
+    self:UnregisterEvent("CHAT_MSG_MONSTER_YELL")
 end
 
 -- Chat Command Handler
 function MasterLootReminder:ChatCommand(input)
     if not input or input:trim() == "" then
-        LibStub("AceConfigDialog-3.0"):Open("MasterLootReminder")
+        -- Try to open config panel with error handling
+        local success, msg = pcall(function()
+            LibStub("AceConfigDialog-3.0"):Open("MasterLootReminder")
+        end)
+        
+        if not success then
+            -- Simple command help as fallback
+            self:Print("Config panel not available: " .. tostring(msg))
+            self:Print("Available commands:")
+            self:Print("/mlr enable - Enable the addon")
+            self:Print("/mlr disable - Disable the addon") 
+            self:Print("/mlr grouploot - Toggle group loot option")
+            self:Print("/mlr ignoreTarget - Add target to permanent ignore list")
+        end
     else
-        LibStub("AceConfigCmd-3.0").HandleCommand(MasterLootReminder, "mlr", "MasterLootReminder", input)
+        -- Parse the input
+        local cmd = input:trim():lower()
+        if cmd == "enable" then
+            self:SetEnable(nil, true)
+            self:Print("MasterLootReminder enabled")
+        elseif cmd == "disable" then
+            self:SetEnable(nil, false)
+            self:Print("MasterLootReminder disabled")
+        elseif cmd == "grouploot" then
+            self:SetGroupLoot(nil, not self:GetGroupLoot())
+            self:Print("Group loot option set to: " .. tostring(self:GetGroupLoot()))
+        elseif cmd == "ignoretarget" then
+            self:IgnoreTarget()
+        else
+            -- Try to use AceConfigCmd handler if available
+            local success = pcall(function()
+                LibStub("AceConfigCmd-3.0").HandleCommand(MasterLootReminder, "mlr", "MasterLootReminder", input)
+            end)
+            
+            if not success then
+                self:Print("Unknown command: " .. cmd)
+                self:Print("Use /mlr for a list of commands")
+            end
+        end
     end
 end
 
@@ -151,20 +317,25 @@ function MasterLootReminder:SetEnable(info, value)
     end
 end
 
-function MasterLootReminder:GetType(info)
-    return self.db.profile.Type
+function MasterLootReminder:GetGroupLoot(info)
+    return self.db.profile.GroupLoot
 end
 
-function MasterLootReminder:SetType(info, value)
-    self.db.profile.Type = value
+function MasterLootReminder:SetGroupLoot(info, value)
+    self.db.profile.GroupLoot = value
 end
 
 -- Boss detection
 function MasterLootReminder:IsBoss(unitName)
     if not unitName then return false end
     
-    -- Check using LibBabble-Boss
-    return BossCheck[unitName] ~= nil
+    -- Use LibBabble-Boss if available
+    if BossCheck then
+        return BossCheck[unitName] ~= nil
+    end
+    
+    -- Fallback to our own list if library is missing
+    return KnownBosses[unitName] == true
 end
 
 -- Ignore List Functions
@@ -273,19 +444,17 @@ function MasterLootReminder:IsGroupLeader()
 end
 
 function MasterLootReminder:GetGroupType()
-    -- 1 = Party only, 2 = Raid only, 3 = Both (not used internally)
+    -- Check if player is a raid leader
     if not self:IsGroupLeader() then
-        return 0
-    elseif UnitInParty("player") and not UnitInRaid("player") then
-        return 1
+        return false
     elseif UnitInRaid("player") then
-        return 2
+        return true
     end
-    return 0
+    return false
 end
 
 function MasterLootReminder:IsIgnored(unitName)
-    if self:InTable(self.db.profile.Ignored, unitName) or self:InTable(self.Ignored, unitName) then
+    if self:InTable(self.db.profile.Ignored, unitName) or self:InTable(self.Ignored, unitName) or IgnoredByDefault[unitName] then
         return true
     else
         return false
@@ -303,11 +472,10 @@ end
 
 -- Event Handlers
 function MasterLootReminder:PLAYER_TARGET_CHANGED()
-    local type = self.db.profile.Type
-    local getType = self:GetGroupType()
+    local inRaid = self:GetGroupType()
     
-    if self.db.profile.Enable and (getType ~= 0 and type == 3 or getType == type) then
-        local lootmethod = GetLootMethod()
+    if self.db.profile.Enable and inRaid then
+        local lootmethod, masterlooter = GetLootMethod()
         local targetName
         
         if UnitIsPlayer("target") or UnitPlayerControlled("target") then
@@ -316,15 +484,59 @@ function MasterLootReminder:PLAYER_TARGET_CHANGED()
             targetName = UnitName("target")
         end
         
-        if targetName and self:IsBoss(targetName) and lootmethod ~= "master" and not self.visible and not self:IsIgnored(targetName) then
-            self.bossName = targetName
-            self:Print("Boss detected: " .. self.bossName)
-            StaticPopup_Show("MASTERLOOTREMINDER_POPUP")
+        if targetName and self:IsBoss(targetName) then
+            -- Add debug message to show we detected a boss
+            self:Print("Detected boss: " .. targetName)
+            
+            if self.visible then
+                self:Print("Popup already visible, not showing another")
+            elseif self:IsIgnored(targetName) then
+                self:Print("Boss " .. targetName .. " is on ignore list, not showing popup")
+            else
+                self.bossName = targetName
+                self:Print("Boss detected and not ignored: " .. self.bossName)
+                
+                -- Special handling for Lady Vashj
+                if targetName == "Lady Vashj" and not self.isVashjPhase3 then
+                    if lootmethod ~= "freeforall" then
+                        StaticPopup_Show("MASTERLOOTREMINDER_VASHJ_POPUP")
+                    end
+                    return
+                end
+                
+                -- Regular handling for other bosses
+                -- Check if we should show master loot or group loot popup
+                if self.db.profile.GroupLoot and lootmethod == "master" then
+                    StaticPopup_Show("MASTERLOOTREMINDER_GROUP_POPUP")
+                elseif lootmethod ~= "master" then
+                    StaticPopup_Show("MASTERLOOTREMINDER_POPUP")
+                end
+            end
         end
     end
 end
 
--- Setup the popup dialog
+function MasterLootReminder:CHAT_MSG_MONSTER_YELL(event, message, sender)
+    -- Use a partial match that we know works
+    if string.find(message, "take cover") then
+        self:Print("Vashj Phase 3 detected!")
+        self.isVashjPhase3 = true
+        local inRaid = self:GetGroupType()
+        
+        if self.db.profile.Enable and inRaid then
+            local lootmethod = GetLootMethod()
+            
+            if lootmethod ~= "master" then
+                self:Print("Showing master loot popup for Vashj Phase 3")
+                StaticPopup_Show("MASTERLOOTREMINDER_VASHJ_PHASE3_POPUP")
+            else
+                self:Print("Already using master loot - no popup needed")
+            end
+        end
+    end
+end
+
+-- Setup the popup dialogs
 StaticPopupDialogs["MASTERLOOTREMINDER_POPUP"] = {
     text = "Set yourself as Master Looter?",
     button1 = YES,
@@ -338,6 +550,65 @@ StaticPopupDialogs["MASTERLOOTREMINDER_POPUP"] = {
     end,
     OnCancel = function()
         MasterLootReminder:Ignore(MasterLootReminder.Ignored)
+        MasterLootReminder.visible = false
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
+
+StaticPopupDialogs["MASTERLOOTREMINDER_GROUP_POPUP"] = {
+    text = "Switch to Group Loot?",
+    button1 = YES,
+    button2 = NO,
+    OnShow = function()
+        MasterLootReminder.visible = true
+    end,
+    OnAccept = function()
+        SetLootMethod("group")
+        MasterLootReminder.visible = false
+    end,
+    OnCancel = function()
+        MasterLootReminder:Ignore(MasterLootReminder.Ignored)
+        MasterLootReminder.visible = false
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
+
+StaticPopupDialogs["MASTERLOOTREMINDER_VASHJ_POPUP"] = {
+    text = "Switch to Free-for-All for Lady Vashj?",
+    button1 = YES,
+    button2 = NO,
+    OnShow = function()
+        MasterLootReminder.visible = true
+    end,
+    OnAccept = function()
+        SetLootMethod("freeforall")
+        MasterLootReminder.visible = false
+    end,
+    OnCancel = function()
+        MasterLootReminder:Ignore(MasterLootReminder.Ignored)
+        MasterLootReminder.visible = false
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
+
+StaticPopupDialogs["MASTERLOOTREMINDER_VASHJ_PHASE3_POPUP"] = {
+    text = "Lady Vashj Phase 3! Switch to Master Loot?",
+    button1 = YES,
+    button2 = NO,
+    OnShow = function()
+        MasterLootReminder.visible = true
+    end,
+    OnAccept = function()
+        SetLootMethod("master", UnitName("player"))
+        MasterLootReminder.visible = false
+    end,
+    OnCancel = function()
         MasterLootReminder.visible = false
     end,
     timeout = 0,

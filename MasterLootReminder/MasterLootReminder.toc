@@ -2,24 +2,33 @@
 ## Title: Master Loot Reminder
 ## Notes: Reminds the party/raid leader to set Master Loot for bosses
 ## Author: Fivebuttons
-## Version: 1.0
+## Version: 1.1
 ## SavedVariables: MasterLootReminderDB
 ## OptionalDeps: Ace3
-## X-Embeds: Ace3
+## X-Embeds: Ace3, LibBabble-Boss-3.0
 
-#@no-lib-strip@
+# Core libraries must load first
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+
+# Ace3 libraries - organized by dependencies
 Libs\AceAddon-3.0\AceAddon-3.0.lua
 Libs\AceEvent-3.0\AceEvent-3.0.lua
+Libs\AceTimer-3.0\AceTimer-3.0.lua
 Libs\AceDB-3.0\AceDB-3.0.lua
 Libs\AceConsole-3.0\AceConsole-3.0.lua
 Libs\AceGUI-3.0\AceGUI-3.0.lua
-Libs\AceConfig-3.0\AceConfig-3.0.lua
 Libs\AceLocale-3.0\AceLocale-3.0.lua
-Libs\AceDBOptions-3.0\AceDBOptions-3.0.lua
-Libs\AceConfigDialog-3.0\AceConfigDialog-3.0.lua
-Libs\AceConfigCmd-3.0\AceConfigCmd-3.0.lua
-#@end-no-lib-strip@
 
+# Config libraries - CORRECT LOAD ORDER IS CRITICAL
+Libs\AceConfigRegistry-3.0\AceConfigRegistry-3.0.xml
+Libs\AceConfig-3.0\AceConfig-3.0.xml
+Libs\AceConfigCmd-3.0\AceConfigCmd-3.0.xml
+Libs\AceConfigDialog-3.0\AceConfigDialog-3.0.xml
+Libs\AceDBOptions-3.0\AceDBOptions-3.0.xml
+
+# Other libraries
+Libs\LibBabble-Boss-3.0\lib.xml
+
+# Main addon file
 MasterLootReminder.lua

@@ -496,6 +496,9 @@ function MasterLootReminder:PLAYER_TARGET_CHANGED()
                 self.bossName = targetName
                 self:Print("Boss detected and not ignored: " .. self.bossName)
                 
+                -- Check if the boss is dead
+                local isDead = UnitIsDead("target")
+                
                 -- Special handling for Lady Vashj
                 if targetName == "Lady Vashj" and not self.isVashjPhase3 then
                     if lootmethod ~= "freeforall" then
@@ -504,11 +507,12 @@ function MasterLootReminder:PLAYER_TARGET_CHANGED()
                     return
                 end
                 
-                -- Regular handling for other bosses
-                -- Check if we should show master loot or group loot popup
-                if self.db.profile.GroupLoot and lootmethod == "master" then
+                -- Check if we should show group loot popup (for dead bosses) or master loot (for live bosses)
+                if isDead and self.db.profile.GroupLoot and lootmethod == "master" then
+                    self:Print("Dead boss detected, showing group loot popup")
                     StaticPopup_Show("MASTERLOOTREMINDER_GROUP_POPUP")
-                elseif lootmethod ~= "master" then
+                elseif not isDead and lootmethod ~= "master" then
+                    self:Print("Live boss detected, showing master loot popup")
                     StaticPopup_Show("MASTERLOOTREMINDER_POPUP")
                 end
             end

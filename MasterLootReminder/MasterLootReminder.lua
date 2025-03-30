@@ -1,16 +1,16 @@
 local MasterLootReminder = LibStub("AceAddon-3.0"):NewAddon("MasterLootReminder", "AceEvent-3.0", "AceConsole-3.0", "AceTimer-3.0")
 
 -- Debug function to check library availability
--- local function CheckLibrary(name)
---   local status, lib = pcall(function() return LibStub(name) end)
---    if status and lib then
---        MasterLootReminder:Print("Found library: " .. name)
---       return true
---    else
---        MasterLootReminder:Print("Missing library: " .. name)
---        return false
---    end
---end
+local function CheckLibrary(name)
+   local status, lib = pcall(function() return LibStub(name) end)
+    if status and lib then
+        -- MasterLootReminder:Print("Found library: " .. name)
+       return true
+    else
+        -- MasterLootReminder:Print("Missing library: " .. name)
+        return false
+    end
+end
 
 -- Check for critical libraries
 MasterLootReminder.LibrariesLoaded = true
